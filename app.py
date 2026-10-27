@@ -85,12 +85,26 @@ if HAS_GENAI_SDK and raw_api_key:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
 # --- 4. HÀM TRUY VẤN CORE GEMINI AI ---
-def ask_sika_agent_core(question: str) -> str:
-    if not HAS_GENAI_SDK:
-        return "❌ Thư viện `google-genai` chưa được cài đặt trong môi trường Streamlit."
+import os
+import time
+import streamlit as st
+import google.generativeai as genai_legacy
 
-    if not client:
-        return "❌ Chưa cấu hình API Key. Anh hãy bổ sung `GEMINI_API_KEY` vào mục **Secrets** trên Streamlit Cloud."
+# --- CẤU HÌNH API KEY VỚI HỖ TRỢ GOOGLE-GENERATIVEAI ---
+raw_api_key = ""
+if "GEMINI_API_KEY" in st.secrets:
+    raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
+else:
+    raw_api_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+
+if raw_api_key:
+    # Cấu hình SDK chuẩn
+    genai_legacy.configure(api_key=raw_api_key)
+
+
+def ask_sika_agent_core(question: str) -> str:
+    if not raw_api_key:
+        return "❌ Chưa cấu hình API Key. Anh hãy bổ sung `GEMINI_API_KEY` vào mục **Secrets** trên Streamlit Cloud."[cite: 7]
 
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
@@ -110,7 +124,7 @@ def ask_sika_agent_core(question: str) -> str:
             for doc in static_docs
         ])
 
-    # 2. Xây dựng Prompt Self-Consistency & Guardrails
+    # 2. Xây dựng Prompt Self-Consistency
     prompt = f"""Bạn là Trợ lý Kỹ thuật Cao cấp của Sika Việt Nam.
 Hãy thực hiện quy trình suy luận Self-Consistency qua 3 bước dưới đây để đảm bảo tuyệt đối không bỏ sót thông tin trong CSDL:
 
@@ -127,47 +141,30 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách mô hình ưu tiên
+    # 3. Danh sách model theo cú pháp google-generativeai
     model_list = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-pro"
     ]
 
     response_text = None
     last_error_details = []
 
-    # Thử từng model, mỗi model thử tối đa 3 lần với khoảng chờ tăng dần (Backoff)
     for model_name in model_list:
-        for attempt in range(1, 4):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                if response and response.text:
-                    response_text = response.text
-                    break
-            except Exception as e:
-                err_str = str(e)
-                last_error_details.append(f"Model [{model_name}] (Lần {attempt}): {err_str}")
-                
-                # Nếu dính lỗi Rate Limit (429) hoặc Server quá tải (503), tạm dừng tăng dần
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
-                    time.sleep(2 * attempt)
-                else:
-                    # Nếu là lỗi khác (ví dụ sai model name), chuyển sang model tiếp theo ngay
-                    break
-        if response_text:
-            break
+        try:
+            model = genai_legacy.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            if response and response.text:
+                response_text = response.text
+                break
+        except Exception as e:
+            last_error_details.append(f"Model [{model_name}]: {str(e)}")
 
-    # Nếu tất cả các model đều thất bại, in ra chính xác nguyên nhân lỗi API từ Google
     if not response_text:
-        error_summary = "\n".join(last_error_details[-3:])  # Lấy 3 lỗi gần nhất
-        return f"⚠️ **Google Gemini API không phản hồi.**\n\n**Chi tiết lỗi từ Google API:**\n```text\n{error_summary}\n```\n*Vui lòng kiểm tra hạn ngạch Quota/Rate Limit hoặc bấm thử lại sau 10-15 giây!*"
+        error_summary = "\n".join(last_error_details)
+        return f"⚠️ **Lỗi xác thực Google API:**\n```text\n{error_summary}\n```\n*Anh vui lòng kiểm tra lại Key trên Google AI Studio hoặc Reboot app trên Streamlit Cloud.*"
 
-    # Trích dẫn nguồn tài liệu tham chiếu
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
         response_text += "\n\n📌 **Tài liệu tham chiếu:**\n" + "\n".join([f"- {src}" for src in sources])
