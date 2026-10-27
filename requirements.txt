@@ -1,9 +1,9 @@
-google-genai
-langchain==0.3.7
-langchain-community==0.3.7
-langchain-google-genai==2.0.4
+streamlit>=1.30.0
+google-genai>=0.1.1
+pandas
+numpy
+pypdf
+openpyxl
 faiss-cpu
-streamlit==1.38.0
-pandas==2.2.3
-pypdf==5.1.0
-openpyxl==3.1.5
+torch --extra-index-url https://download.pytorch.org/whl/cpu
+sentence-transformers
