@@ -24,7 +24,7 @@ if not api_key:
     st.error("⚠️ **Chưa cấu hình GEMINI_API_KEY!** Vui lòng kiểm tra lại phần **Secrets** trong Settings của Streamlit Cloud.")
     st.stop()
 
-# Cấu hình API Key trực tiếp cho Gemini SDK
+# Cấu hình API Key cho SDK
 genai.configure(api_key=api_key)
 
 # System Prompt kiểm soát ảo giác (Temperature = 0.0)
@@ -45,10 +45,17 @@ generation_config = {
     "max_output_tokens": 2048,
 }
 
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    generation_config=generation_config
-)
+# CHỦ ĐỘNG KHỞI TẠO MÔ HÌNH VỚI TÊN CHUẨN ĐÃ ĐƯỢC BẢO TRÌ
+try:
+    model = genai.GenerativeModel(
+        model_name="models/gemini-1.5-flash",
+        generation_config=generation_config
+    )
+except Exception:
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash-latest",
+        generation_config=generation_config
+    )
 
 # ==========================================
 # 2. CACHE CSDL FAISS VECTOR DB
@@ -110,7 +117,6 @@ def parse_uploaded_file(uploaded_file):
 st.title("🏗️ SIKA SPEC LIFE MATRIX - AI SPECIFICATION AGENT")
 st.caption("Hệ thống tự động thẩm định & Khớp giải pháp vật liệu Sika cho Dự án Công nghiệp")
 
-# Quản lý trạng thái kịch bản mẫu
 if "manual_text" not in st.session_state:
     st.session_state.manual_text = ""
 
@@ -164,7 +170,6 @@ with col2:
                 
                 full_user_query = f"{user_text}\n\n[DỮ LIỆU FILE BOQ]:\n{file_content}" if file_content else user_text
                 
-                # Retrieval-Augmented Generation (RAG)
                 context = ""
                 if vector_store is not None:
                     try:
