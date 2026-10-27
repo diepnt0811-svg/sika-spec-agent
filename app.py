@@ -60,9 +60,29 @@ def init_rag_system():
 
 retriever = init_rag_system()
 
-# Khởi tạo Client Gemini API
-api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=api_key) if (HAS_GENAI_SDK and api_key) else None
+# --- KHỞI TẠO CLIENT VỚI HỖ TRỢ CẢ 2 ĐỊNH DẠNG KEY (AIzaSy... & AQ.Ab...) ---
+raw_api_key = ""
+if "GEMINI_API_KEY" in st.secrets:
+    raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
+else:
+    raw_api_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+
+client = None
+if HAS_GENAI_SDK and raw_api_key:
+    try:
+        if raw_api_key.startswith("AQ."):
+            # Xử lý định dạng Express Key / Bearer Token
+            from google.genai import types
+            client = genai.Client(
+                http_options=types.HttpOptions(
+                    headers={"Authorization": f"Bearer {raw_api_key}"}
+                )
+            )
+        else:
+            # Xử lý định dạng Standard API Key
+            client = genai.Client(api_key=raw_api_key)
+    except Exception as e:
+        st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
 # --- 4. HÀM TRUY VẤN CORE GEMINI AI ---
 def ask_sika_agent_core(question: str) -> str:
