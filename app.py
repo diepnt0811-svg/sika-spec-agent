@@ -143,9 +143,9 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     # 3. Danh sách model theo cú pháp google-generativeai
     model_list = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-pro"
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash-exp"
     ]
 
     response_text = None
