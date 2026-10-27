@@ -1,6 +1,5 @@
 streamlit>=1.30.0
-google-generativeai
-google-genai
+google-genai>=0.1.1
 pandas
 numpy
 pypdf
