@@ -1,48 +1,108 @@
 import os
+import sys
 import importlib
 import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from langchain_huggingface import HuggingFaceEmbeddings
+
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except ImportError:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+
 from langchain_community.vectorstores import FAISS
 
-import config
-import pdf_processor
+# Thử import các module phụ trợ nếu có (không gây crash app nếu thiếu ở môi trường Cloud)
+try:
+    import config
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+
+try:
+    import pdf_processor
+    HAS_PDF_PROCESSOR = True
+except ImportError:
+    HAS_PDF_PROCESSOR = False
 
 def _process_single_pdf(pdf_path):
-    import pdf_processor
-    return pdf_path, pdf_processor.extract_pdf_with_tables(pdf_path)
+    if HAS_PDF_PROCESSOR:
+        import pdf_processor
+        return pdf_path, pdf_processor.extract_pdf_with_tables(pdf_path)
+    return pdf_path, []
 
 class VectorDBManager:
     def __init__(self):
-        importlib.reload(config)
-        importlib.reload(pdf_processor)
+        # 1. Xác định đường dẫn gốc
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
         
+        # 2. Đọc config nếu sẵn có
+        if HAS_CONFIG:
+            try:
+                importlib.reload(config)
+                self.model_name = getattr(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
+                self.db_path = getattr(config, "VECTOR_DB_DIR", self.base_dir)
+                self.pdf_dir = getattr(config, "PDF_DATA_DIR", self.base_dir)
+            except Exception:
+                self.model_name = "BAAI/bge-m3"
+                self.db_path = self.base_dir
+                self.pdf_dir = self.base_dir
+        else:
+            self.model_name = "BAAI/bge-m3"
+            self.db_path = self.base_dir
+            self.pdf_dir = self.base_dir
+
+        if HAS_PDF_PROCESSOR:
+            try:
+                importlib.reload(pdf_processor)
+            except Exception:
+                pass
+
+        # 3. Cấu hình Device & Embeddings
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"🚀 Embedding Model đang chạy trên thiết bị: [{device.upper()}]")
+        print(f"🚀 Embedding Model [{self.model_name}] đang chạy trên: [{device.upper()}]")
         
         self.embeddings = HuggingFaceEmbeddings(
-            model_name=config.EMBEDDING_MODEL_NAME,
+            model_name=self.model_name,
             model_kwargs={'device': device},
             encode_kwargs={
                 'normalize_embeddings': True,
                 'batch_size': 16
             }
         )
-        self.db_path = config.VECTOR_DB_DIR
-        self.pdf_dir = config.PDF_DATA_DIR
+
+    def _resolve_db_path(self):
+        """Tự động tìm kiếm vị trí chứa file index.faiss chính xác nhất"""
+        possible_paths = [
+            self.db_path,
+            self.base_dir,
+            os.getcwd(),
+            os.path.join(self.base_dir, "vector_db"),
+            os.path.join(os.getcwd(), "vector_db")
+        ]
+        
+        for p in possible_paths:
+            if p and os.path.exists(os.path.join(p, "index.faiss")):
+                return p
+        return self.db_path
 
     def load_db(self):
-        # Kiểm tra sự tồn tại của file chỉ mục chính index.faiss
-        index_file = os.path.join(self.db_path, "index.faiss")
+        """Nạp CSDL FAISS từ đĩa"""
+        target_path = self._resolve_db_path()
+        index_file = os.path.join(target_path, "index.faiss")
+        
         if os.path.exists(index_file):
-            print(f"📖 Đang nạp CSDL Vector từ '{self.db_path}'...")
-            return FAISS.load_local(
-                self.db_path, 
-                self.embeddings, 
-                allow_dangerous_deserialization=True
-            )
+            print(f"📖 Đang nạp CSDL Vector từ '{target_path}'...")
+            try:
+                return FAISS.load_local(
+                    target_path, 
+                    self.embeddings, 
+                    allow_dangerous_deserialization=True
+                )
+            except Exception as e:
+                print(f"❌ Lỗi nạp FAISS index tại {target_path}: {e}")
+                return None
         else:
-            print(f"⚠️ CSDL Vector chưa tồn tại hoặc chưa hoàn chỉnh tại '{self.db_path}'!")
+            print(f"⚠️ CSDL Vector chưa tồn tại hoặc không tìm thấy tại '{target_path}'!")
             return None
 
     def get_processed_files(self, vector_store):
@@ -77,6 +137,10 @@ class VectorDBManager:
         return vector_store
 
     def build_from_scratch(self):
+        if not HAS_PDF_PROCESSOR or not os.path.exists(self.pdf_dir):
+            print("⚠️ Không tìm thấy module pdf_processor hoặc thư mục PDF gốc. Không thể build lại từ đầu.")
+            return None
+
         pdf_files = []
         for root, _, files in os.walk(self.pdf_dir):
             for f in files:
@@ -118,53 +182,47 @@ class VectorDBManager:
         return vector_store
 
     def auto_update_or_load(self):
-        index_file = os.path.join(self.db_path, "index.faiss")
-        if not os.path.exists(index_file):
-            print("⚡ CSDL FAISS chưa tồn tại. Bắt đầu khởi tạo từ đầu...")
-            return self.build_from_scratch()
+        # 1. Kiểm tra & nạp CSDL đã có
+        resolved_path = self._resolve_db_path()
+        index_file = os.path.join(resolved_path, "index.faiss")
+        
+        if os.path.exists(index_file):
+            print(f"⚡ Đang nạp CSDL Vector FAISS từ '{resolved_path}'...")
+            vector_store = self.load_db()
+            if vector_store is not None:
+                # Kiểm tra xem có môi trường để scan PDF mới không
+                if HAS_PDF_PROCESSOR and os.path.exists(self.pdf_dir):
+                    all_pdf_files = []
+                    for root, _, files in os.walk(self.pdf_dir):
+                        for f in files:
+                            if f.lower().endswith('.pdf'):
+                                all_pdf_files.append(os.path.join(root, f))
 
-        print("⚡ Đang nạp CSDL Vector từ Drive để kiểm tra cập nhật...")
-        vector_store = self.load_db()
+                    existing_files = self.get_processed_files(vector_store)
+                    new_pdf_files = [f for f in all_pdf_files if os.path.basename(f) not in existing_files]
 
-        if vector_store is None:
-            return self.build_from_scratch()
+                    if new_pdf_files:
+                        print(f"\n🆕 Phát hiện {len(new_pdf_files)} file PDF MỚI. Bắt đầu nạp bổ sung...")
+                        max_workers = min(os.cpu_count() or 2, 4)
+                        new_docs = []
+                        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                            futures = [executor.submit(_process_single_pdf, pdf_path) for pdf_path in new_pdf_files]
+                            for idx, future in enumerate(as_completed(futures), 1):
+                                pdf_path, docs = future.result()
+                                file_name = os.path.basename(pdf_path)
+                                print(f" [{idx}/{len(new_pdf_files)}] Nạp bổ sung: {file_name}")
+                                if docs:
+                                    new_docs.extend(docs)
 
-        all_pdf_files = []
-        for root, _, files in os.walk(self.pdf_dir):
-            for f in files:
-                if f.lower().endswith('.pdf'):
-                    all_pdf_files.append(os.path.join(root, f))
+                        if new_docs:
+                            print(f"📦 Đã trích xuất {len(new_docs)} Chunks. Đang tạo Vector...")
+                            new_db = self._create_vector_in_batches(new_docs, batch_size=16)
+                            vector_store.merge_from(new_db)
+                            vector_store.save_local(resolved_path)
+                            print(f"\n🎉 HOÀN THÀNH CẬP NHẬT! Đã nạp thêm {len(new_pdf_files)} file mới.")
+                
+                return vector_store
 
-        existing_files = self.get_processed_files(vector_store)
-        new_pdf_files = [f for f in all_pdf_files if os.path.basename(f) not in existing_files]
-
-        if not new_pdf_files:
-            print("✅ KHÔNG CÓ FILE MỚI! CSDL Vector đã ở phiên bản mới nhất, bỏ qua bước build lại.")
-            return vector_store
-
-        print(f"\n🆕 Phát hiện {len(new_pdf_files)} file PDF MỚI. Bắt đầu nạp bổ sung...")
-
-        max_workers = min(os.cpu_count() or 2, 4)
-        new_docs = []
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_process_single_pdf, pdf_path) for pdf_path in new_pdf_files]
-            for idx, future in enumerate(as_completed(futures), 1):
-                pdf_path, docs = future.result()
-                file_name = os.path.basename(pdf_path)
-                print(f" [{idx}/{len(new_pdf_files)}] Nạp bổ sung: {file_name}")
-                if docs:
-                    new_docs.extend(docs)
-
-        chunks = new_docs
-
-        if not chunks:
-            print("⚠️ CẢNH BÁO: File mới không chứa dữ liệu đọc được.")
-            return vector_store
-
-        print(f"📦 Đã trích xuất {len(chunks)} Chunks. Đang tạo Vector...")
-        new_db = self._create_vector_in_batches(chunks, batch_size=16)
-        vector_store.merge_from(new_db)
-
-        vector_store.save_local(self.db_path)
-        print(f"\n🎉 HOÀN THÀNH CẬP NHẬT! Đã nạp thêm {len(new_pdf_files)} file mới vào CSDL.")
-        return vector_store
+        # 2. Nếu không nạp được index.faiss có sẵn, chuyển sang build từ đầu (cho local/Colab)
+        print("⚡ CSDL FAISS chưa tồn tại hoặc không thể nạp. Thử khởi tạo từ đầu...")
+        return self.build_from_scratch()
