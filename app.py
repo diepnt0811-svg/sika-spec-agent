@@ -3,7 +3,6 @@ import sys
 import time
 import pandas as pd
 import streamlit as st
-from google import genai
 
 # --- 1. CẤU HÌNH TRANG STREAMLIT ---
 st.set_page_config(
@@ -12,19 +11,28 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. NHẬP MODULE NỘI BỘ ---
+# --- 2. KIỂM TRA & NHẬP THƯ VIỆN GOOGLE GENAI ---
+try:
+    from google import genai
+    HAS_GENAI_SDK = True
+except ImportError:
+    HAS_GENAI_SDK = False
+    st.error(
+        "⚠️ Thiếu thư viện `google-genai`. Anh vui lòng thêm `google-genai` vào file `requirements.txt` "
+        "trên GitHub và chọn 'Reboot app' trên Streamlit Cloud."
+    )
+
+# --- 3. NHẬP MODULE NỘI BỘ (RAG ENGINE & FAISS) ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
 @st.cache_resource
 def init_rag_system():
-    """Khởi tạo CSDL Vector FAISS và Retriever (cached để tránh load lại nhiều lần)"""
+    """Khởi tạo CSDL Vector FAISS và Retriever (dùng cache để tăng tốc độ tải)"""
     try:
         from vector_store import VectorDBManager
         from knowledge_retriever_tool import EnterpriseKnowledgeRetriever, init_retriever_tool
-        from agent_engine import SikaAIAgent
-        from spec_matcher import SpecMatcher
 
         vdb_manager = VectorDBManager()
         vector_db = vdb_manager.auto_update_or_load()
@@ -34,32 +42,35 @@ def init_rag_system():
             retriever = EnterpriseKnowledgeRetriever(vector_db=vector_db)
             return retriever
     except Exception as e:
-        st.error(f"⚠️ Lỗi khởi tạo RAG Engine: {e}")
+        st.warning(f"⚠️ Chưa thể nạp module RAG Vector DB: {e}")
     return None
 
 retriever = init_rag_system()
 
-# Khởi tạo Google GenAI Client
+# Khởi tạo Client Gemini API
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=api_key) if api_key else None
+client = genai.Client(api_key=api_key) if (HAS_GENAI_SDK and api_key) else None
 
-# --- 3. HÀM TRUY VẤN CORE GEMINI AI ---
+# --- 4. HÀM TRUY VẤN CORE GEMINI AI ---
 def ask_sika_agent_core(question: str) -> str:
-    if not retriever:
-        return "❌ Hệ thống chưa sẵn sàng do chưa nạp được CSDL Vector FAISS."
+    if not HAS_GENAI_SDK:
+        return "❌ Thư viện `google-genai` chưa được cài đặt trong môi trường Streamlit."
 
     if not client:
-        return "❌ Chưa cấu hình GEMINI_API_KEY trong Environment Variables / Secrets."
+        return "❌ Chưa cấu hình API Key. Anh hãy bổ sung `GEMINI_API_KEY` vào mục **Secrets** trên Streamlit Cloud."
 
-    # 1. Truy vấn tài liệu từ FAISS
+    if not retriever:
+        return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
+
+    # 1. Truy vấn tài liệu từ CSDL FAISS
     try:
         retrieval_results = retriever.hybrid_retrieve(query=question, top_k=5)
         static_docs = retrieval_results.get("static_knowledge_results", [])
     except Exception as e:
-        return f"❌ Lỗi truy vấn FAISS Database: {str(e)}"
+        return f"❌ Lỗi truy vấn CSDL FAISS: {str(e)}"
 
     if not static_docs:
-        context_text = "Không tìm thấy tài liệu phù hợp trong CSDL."
+        context_text = "Không tìm thấy tài liệu phù hợp trực tiếp trong CSDL."
     else:
         context_text = "\n\n---\n\n".join([
             f"TÀI LIỆU: {doc.get('file_name')} (Trang {doc.get('page')}):\n{doc.get('content')}"
@@ -83,7 +94,7 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách Gemini Model ưu tiên
+    # 3. Danh sách Gemini Models ưu tiên theo thứ tự
     model_list = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
@@ -112,15 +123,16 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
             break
 
     if not response_text:
-        return "⚠️ Tất cả các mô hình Gemini hiện đang bận hoặc gặp sự cố kết nối. Vui lòng thử lại!"
+        return "⚠️ Tất cả các mô hình Gemini hiện đang bận hoặc gặp sự cố kết nối. Anh vui lòng bấm gửi lại sau vài giây!"
 
+    # Trích dẫn nguồn
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
         response_text += "\n\n📌 **Tài liệu tham chiếu:**\n" + "\n".join([f"- {src}" for src in sources])
 
     return response_text
 
-# --- 4. HÀM XỬ LÝ ĐỌC FILE ---
+# --- 5. HÀM ĐỌC FILE TẢI LÊN ---
 def parse_uploaded_file(uploaded_file):
     if uploaded_file is None:
         return ""
@@ -146,11 +158,11 @@ def parse_uploaded_file(uploaded_file):
 
     return content
 
-# --- 5. GIAO DIỆN STREAMLIT UI ---
+# --- 6. GIAO DIỆN STREAMLIT UI ---
 st.title("🏗️ SIKA SPEC LIFE MATRIX - AI SPECIFICATION AGENT")
 st.caption("Hệ thống tự động thẩm định & Khớp giải pháp vật liệu Sika cho Dự án Công nghiệp")
 
-# Khởi tạo Chat History trong Session State
+# Quản lý State
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_result" not in st.session_state:
@@ -158,10 +170,10 @@ if "last_result" not in st.session_state:
 if "manual_input_val" not in st.session_state:
     st.session_state.manual_input_val = ""
 
-col1, col2 = st.columns([1, 2])
+col_input, col_chat = st.columns([1, 2])
 
-# --- CỘT TRÁI: ĐẦU VÀO ---
-with col1:
+# --- CỘT TRÁI: ĐẦU VÀO YÊU CẦU ---
+with col_input:
     st.subheader("📥 1. Đầu vào Yêu cầu Dự án")
     
     uploaded_file = st.file_uploader(
@@ -173,7 +185,7 @@ with col1:
         "✍️ Nhập/Bổ sung Yêu cầu Kỹ thuật Thủ công",
         value=st.session_state.manual_input_val,
         placeholder="Ví dụ: Cần sàn Epoxy chống hóa chất cho nhà máy dược GMP, diện tích 2000m2...",
-        height=130
+        height=140
     )
 
     btn_analyze = st.button("⚡ Phân tích & Đề xuất Giải pháp", type="primary", use_container_width=True)
@@ -192,41 +204,41 @@ with col1:
         st.session_state.manual_input_val = "Hạng mục bể chứa nước thải công nghiệp pH 2-12: Yêu cầu vật liệu bọc phủ chống thấm và kháng mài mòn sinh học, thi công được trên bề mặt bê tông ẩm."
         st.rerun()
 
-# Xử lý khi nhấn nút Phân tích
+# Xử lý sự kiện Phân tích
 if btn_analyze:
     file_content = parse_uploaded_file(uploaded_file) if uploaded_file else ""
     combined_query = ""
     if file_content:
         combined_query += f"Dữ liệu từ File dự án/BOQ:\n{file_content}\n\n"
     if manual_input.strip():
-        combined_query += f"Yêu cầu bổ sung từ người dùng:\n{manual_prompt.strip()}" if 'manual_prompt' in locals() else f"Yêu cầu bổ sung:\n{manual_input.strip()}"
+        combined_query += f"Yêu cầu bổ sung:\n{manual_input.strip()}"
 
     if not combined_query.strip():
         st.warning("⚠️ Vui lòng tải lên file BOQ/Dự án hoặc nhập yêu cầu kỹ thuật.")
     else:
-        with st.spinner("🔍 Đang truy vấn CSDL FAISS Vector & Gemini LLM..."):
+        with st.spinner("🔍 Đang đối chiếu CSDL FAISS Vector & Gemini LLM..."):
             start_time = time.time()
             res = ask_sika_agent_core(combined_query)
             elapsed = round(time.time() - start_time, 2)
             
-            user_msg = manual_input.strip() if manual_input.strip() else "Phân tích file BOQ dự án"
+            user_msg = manual_input.strip() if manual_input.strip() else "Phân tích file dự án/BOQ"
             st.session_state.messages.append({"role": "user", "content": user_msg})
-            st.session_state.messages.append({"role": "assistant", "content": f"⏱️ *Xử lý trong {elapsed}s*\n\n" + res})
+            st.session_state.messages.append({"role": "assistant", "content": f"⏱️ *Thời gian xử lý: {elapsed}s*\n\n" + res})
             st.session_state.last_result = res
 
-# --- CỘT PHẢI: KHUNG CHAT & KẾT QUẢ ---
-with col2:
-    st.subheader("📊 2. Kết quả Phân tích & Hỏi đáp Kỹ thuật")
+# --- CỘT PHẢI: HIỂN THỊ KẾT QUẢ & CHAT THẢO LUẬN ---
+with col_chat:
+    st.subheader("📊 2. Kết quả Phân tích & Thảo luận Kỹ thuật")
 
-    # Hiển thị lịch sử Chat
-    chat_container = st.container(height=450)
+    # Vùng chứa khung hội thoại
+    chat_container = st.container(height=480)
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    # Ô nhập câu hỏi thảo luận thêm
-    if user_followup := st.chat_input("💬 Hỏi đáp thêm về kết quả (độ dày, định mức, quy trình thi công...)..."):
+    # Nhập câu hỏi phụ
+    if user_followup := st.chat_input("💬 Hỏi đáp thêm (định mức thi công, tiêu chuẩn ASTM, so sánh giải pháp...)..."):
         st.session_state.messages.append({"role": "user", "content": user_followup})
         
         contextual_prompt = (
