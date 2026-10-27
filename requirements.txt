@@ -3,6 +3,9 @@ google-genai>=0.1.1
 pandas
 numpy
 pypdf
+pdfplumber
+PyPDF2
+PyMuPDF
 openpyxl
 faiss-cpu
 torch --extra-index-url https://download.pytorch.org/whl/cpu
