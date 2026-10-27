@@ -84,31 +84,40 @@ if HAS_GENAI_SDK and raw_api_key:
     except Exception as e:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
-# --- 4. HÀM TRUY VẤN CORE GEMINI AI ---
+# --- 4. KHỞI TẠO GOOGLE GENAI SDK CHUẨN V2 ---
 import os
 import time
 import streamlit as st
 
-# --- KHỞI TẠO GOOGLE GENAI SDK CHUẨN V2 ---
+# --- KHỞI TẠO GOOGLE GENAI SDK ---
 try:
     from google import genai
+    from google.genai import types
     HAS_GENAI_SDK = True
 except ImportError:
     HAS_GENAI_SDK = False
 
-# 1. Đọc và làm sạch API Key từ Secrets hoặc biến môi trường
+# 1. Trích xuất và làm sạch API Key
 raw_api_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
 else:
     raw_api_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 
-# 2. Khởi tạo Client với cơ chế đọc Key linh hoạt
+# 2. Khởi tạo Client cấu hình ép Header Bearer Token cho key AQ.Ab...
 client = None
 if HAS_GENAI_SDK and raw_api_key:
     try:
-        # SDK tự động xử lý các định dạng API Key chuẩn cũng như Express Key
-        client = genai.Client(api_key=raw_api_key)
+        if raw_api_key.startswith("AQ."):
+            # Ép SDK gửi xác thực dưới dạng OAuth2 / Bearer Token
+            client = genai.Client(
+                http_options=types.HttpOptions(
+                    headers={"Authorization": f"Bearer {raw_api_key}"}
+                )
+            )
+        else:
+            # Khởi tạo API Key tiêu chuẩn
+            client = genai.Client(api_key=raw_api_key)
     except Exception as e:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
@@ -118,12 +127,12 @@ def ask_sika_agent_core(question: str) -> str:
         return "❌ Thư viện `google-genai` chưa được cài đặt trong `requirements.txt`."
 
     if not client:
-        return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong mục **Secrets** trên Streamlit Cloud."
+        return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong Secrets."
 
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
 
-    # 1. Truy vấn tài liệu từ CSDL FAISS
+    # Truy vấn CSDL FAISS
     try:
         retrieval_results = retriever.hybrid_retrieve(query=question, top_k=3)
         static_docs = retrieval_results.get("static_knowledge_results", [])
@@ -138,7 +147,6 @@ def ask_sika_agent_core(question: str) -> str:
             for doc in static_docs
         ])
 
-    # 2. Xây dựng Prompt Self-Consistency
     prompt = f"""Bạn là Trợ lý Kỹ thuật Cao cấp của Sika Việt Nam.
 Hãy thực hiện quy trình suy luận Self-Consistency qua 3 bước dưới đây để đảm bảo tuyệt đối không bỏ sót thông tin trong CSDL:
 
@@ -155,7 +163,6 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách model chuẩn chính thức của Google GenAI SDK
     model_list = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
@@ -181,7 +188,7 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     if not response_text:
         error_summary = "\n".join(last_error_details[-3:])
-        return f"⚠️ **Lỗi kết nối Gemini API:**\n```text\n{error_summary}\n```\n*Vui lòng kiểm tra lại thiết lập trên Streamlit Cloud.*"
+        return f"⚠️ **Lỗi kết nối Gemini API:**\n```text\n{error_summary}\n```"
 
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
