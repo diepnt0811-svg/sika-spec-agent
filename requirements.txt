@@ -8,5 +8,8 @@ faiss-cpu
 torch --extra-index-url https://download.pytorch.org/whl/cpu
 sentence-transformers
 langchain
+langchain-core
 langchain-community
 langchain-huggingface
+langchain-text-splitters
+python-dotenv
