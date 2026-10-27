@@ -88,30 +88,44 @@ if HAS_GENAI_SDK and raw_api_key:
 import os
 import time
 import streamlit as st
-import google.generativeai as genai_legacy
 
-# --- CẤU HÌNH API KEY VỚI HỖ TRỢ GOOGLE-GENERATIVEAI ---
+# --- KHỞI TẠO GOOGLE GENAI SDK CHUẨN V2 ---
+try:
+    from google import genai
+    HAS_GENAI_SDK = True
+except ImportError:
+    HAS_GENAI_SDK = False
+
+# 1. Đọc và làm sạch API Key từ Secrets hoặc biến môi trường
 raw_api_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
 else:
     raw_api_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
 
-if raw_api_key:
-    # Cấu hình SDK chuẩn
-    genai_legacy.configure(api_key=raw_api_key)
+# 2. Khởi tạo Client với cơ chế đọc Key linh hoạt
+client = None
+if HAS_GENAI_SDK and raw_api_key:
+    try:
+        # SDK tự động xử lý các định dạng API Key chuẩn cũng như Express Key
+        client = genai.Client(api_key=raw_api_key)
+    except Exception as e:
+        st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
 
 def ask_sika_agent_core(question: str) -> str:
-    if not raw_api_key:
-        return "❌ Chưa cấu hình API Key. Anh hãy bổ sung `GEMINI_API_KEY` vào mục **Secrets** trên Streamlit Cloud."[cite: 7]
+    if not HAS_GENAI_SDK:
+        return "❌ Thư viện `google-genai` chưa được cài đặt trong `requirements.txt`."
+
+    if not client:
+        return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong mục **Secrets** trên Streamlit Cloud."
 
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
 
     # 1. Truy vấn tài liệu từ CSDL FAISS
     try:
-        retrieval_results = retriever.hybrid_retrieve(query=question, top_k=5)
+        retrieval_results = retriever.hybrid_retrieve(query=question, top_k=3)
         static_docs = retrieval_results.get("static_knowledge_results", [])
     except Exception as e:
         return f"❌ Lỗi truy vấn CSDL FAISS: {str(e)}"
@@ -141,11 +155,12 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách model theo cú pháp google-generativeai
+    # 3. Danh sách model chuẩn chính thức của Google GenAI SDK
     model_list = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash-exp"
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
     ]
 
     response_text = None
@@ -153,17 +168,20 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     for model_name in model_list:
         try:
-            model = genai_legacy.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
             if response and response.text:
                 response_text = response.text
                 break
         except Exception as e:
             last_error_details.append(f"Model [{model_name}]: {str(e)}")
+            time.sleep(1)
 
     if not response_text:
-        error_summary = "\n".join(last_error_details)
-        return f"⚠️ **Lỗi xác thực Google API:**\n```text\n{error_summary}\n```\n*Anh vui lòng kiểm tra lại Key trên Google AI Studio hoặc Reboot app trên Streamlit Cloud.*"
+        error_summary = "\n".join(last_error_details[-3:])
+        return f"⚠️ **Lỗi kết nối Gemini API:**\n```text\n{error_summary}\n```\n*Vui lòng kiểm tra lại thiết lập trên Streamlit Cloud.*"
 
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
