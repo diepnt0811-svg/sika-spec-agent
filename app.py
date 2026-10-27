@@ -27,22 +27,35 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
+import traceback
+
 @st.cache_resource
 def init_rag_system():
-    """Khởi tạo CSDL Vector FAISS và Retriever (dùng cache để tăng tốc độ tải)"""
+    """Khởi tạo CSDL Vector FAISS và Retriever với cơ chế debug chi tiết"""
     try:
+        # Đảm bảo sys.path chứa thư mục chứa app.py
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        if app_dir not in sys.path:
+            sys.path.insert(0, app_dir)
+
         from vector_store import VectorDBManager
         from knowledge_retriever_tool import EnterpriseKnowledgeRetriever, init_retriever_tool
 
         vdb_manager = VectorDBManager()
+        
+        # Gọi nạp CSDL
         vector_db = vdb_manager.auto_update_or_load()
 
         if vector_db is not None:
             init_retriever_tool(vector_db=vector_db)
             retriever = EnterpriseKnowledgeRetriever(vector_db=vector_db)
+            st.success("✅ Đã nạp thành công CSDL FAISS Vector DB!")
             return retriever
+        else:
+            st.error("⚠️ `vector_db` trả về `None`. Lỗi có thể do không tìm thấy file `index.faiss` / `index.pkl` hoặc lỗi nạp Embedding Model.")
     except Exception as e:
-        st.warning(f"⚠️ Chưa thể nạp module RAG Vector DB: {e}")
+        st.error(f"❌ Lỗi chi tiết khi khởi tạo RAG Engine: {str(e)}")
+        st.code(traceback.format_exc(), language="python")
     return None
 
 retriever = init_rag_system()
