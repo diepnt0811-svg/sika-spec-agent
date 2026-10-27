@@ -45,17 +45,33 @@ generation_config = {
     "max_output_tokens": 2048,
 }
 
-# CHỦ ĐỘNG KHỞI TẠO MÔ HÌNH VỚI TÊN CHUẨN ĐÃ ĐƯỢC BẢO TRÌ
-try:
-    model = genai.GenerativeModel(
-        model_name="models/gemini-1.5-flash",
-        generation_config=generation_config
-    )
-except Exception:
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash-latest",
-        generation_config=generation_config
-    )
+# ==========================================
+# HÀM GỌI GEMINI AN TOÀN (TỰ ĐỘNG CHUYỂN MODEL NẾU 404)
+# ==========================================
+def generate_gemini_response(prompt_text):
+    # Danh sách các mã tên mô hình ưu tiên thử nghiệm
+    candidate_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-pro"
+    ]
+    
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            m = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config=generation_config
+            )
+            res = m.generate_content(prompt_text)
+            if res and res.text:
+                return res.text
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise Exception(f"Không thể kết nối với mô hình Gemini nào. Lỗi cuối cùng: {str(last_error)}")
 
 # ==========================================
 # 2. CACHE CSDL FAISS VECTOR DB
@@ -194,10 +210,10 @@ YÊU CẦU DỰ ÁN CỦA NGƯỜI DÙNG:
 Hãy phân tích và đưa ra báo cáo thẩm định kỹ thuật chính xác theo đúng Context trên:
 """
                 try:
-                    response = model.generate_content(full_prompt)
+                    output_text = generate_gemini_response(full_prompt)
                     elapsed_time = round(time.time() - start_time, 2)
                     
                     st.success(f"⚡ Hoàn thành xử lý AI thực tế trong **{elapsed_time} giây**")
-                    st.markdown(response.text)
+                    st.markdown(output_text)
                 except Exception as e:
-                    st.error(f"❌ Lỗi kết nối Gemini API: {str(e)}")
+                    st.error(f"❌ {str(e)}")
