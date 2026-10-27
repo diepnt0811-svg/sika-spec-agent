@@ -107,7 +107,7 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách Gemini Models ưu tiên theo thứ tự
+    # 3. Danh sách mô hình ưu tiên
     model_list = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
@@ -116,29 +116,38 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
     ]
 
     response_text = None
+    last_error_details = []
+
+    # Thử từng model, mỗi model thử tối đa 3 lần với khoảng chờ tăng dần (Backoff)
     for model_name in model_list:
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             try:
                 response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                 )
-                response_text = response.text
-                if response_text:
+                if response and response.text:
+                    response_text = response.text
                     break
             except Exception as e:
-                err_msg = str(e)
-                if "503" in err_msg or "429" in err_msg:
-                    time.sleep(1.5)
+                err_str = str(e)
+                last_error_details.append(f"Model [{model_name}] (Lần {attempt}): {err_str}")
+                
+                # Nếu dính lỗi Rate Limit (429) hoặc Server quá tải (503), tạm dừng tăng dần
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(2 * attempt)
                 else:
+                    # Nếu là lỗi khác (ví dụ sai model name), chuyển sang model tiếp theo ngay
                     break
         if response_text:
             break
 
+    # Nếu tất cả các model đều thất bại, in ra chính xác nguyên nhân lỗi API từ Google
     if not response_text:
-        return "⚠️ Tất cả các mô hình Gemini hiện đang bận hoặc gặp sự cố kết nối. Anh vui lòng bấm gửi lại sau vài giây!"
+        error_summary = "\n".join(last_error_details[-3:])  # Lấy 3 lỗi gần nhất
+        return f"⚠️ **Google Gemini API không phản hồi.**\n\n**Chi tiết lỗi từ Google API:**\n```text\n{error_summary}\n```\n*Vui lòng kiểm tra hạn ngạch Quota/Rate Limit hoặc bấm thử lại sau 10-15 giây!*"
 
-    # Trích dẫn nguồn
+    # Trích dẫn nguồn tài liệu tham chiếu
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
         response_text += "\n\n📌 **Tài liệu tham chiếu:**\n" + "\n".join([f"- {src}" for src in sources])
