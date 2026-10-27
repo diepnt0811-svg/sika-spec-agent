@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import traceback
 import pandas as pd
 import streamlit as st
 
@@ -14,6 +15,7 @@ st.set_page_config(
 # --- 2. KIỂM TRA & NHẬP THƯ VIỆN GOOGLE GENAI ---
 try:
     from google import genai
+    from google.genai import types
     HAS_GENAI_SDK = True
 except ImportError:
     HAS_GENAI_SDK = False
@@ -27,13 +29,10 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-import traceback
-
 @st.cache_resource
 def init_rag_system():
     """Khởi tạo CSDL Vector FAISS và Retriever với cơ chế debug chi tiết"""
     try:
-        # Đảm bảo sys.path chứa thư mục chứa app.py
         app_dir = os.path.dirname(os.path.abspath(__file__))
         if app_dir not in sys.path:
             sys.path.insert(0, app_dir)
@@ -60,7 +59,7 @@ def init_rag_system():
 
 retriever = init_rag_system()
 
-# --- KHỞI TẠO CLIENT VỚI HỖ TRỢ CẢ 2 ĐỊNH DẠNG KEY (AIzaSy... & AQ.Ab...) ---
+# --- 4. KHỞI TẠO GEMINI CLIENT CHUẨN (HỖ TRỢ TẤT CẢ ĐỊNH DẠNG API KEY ĐẦU AQ... HOẶC AIza...) ---
 raw_api_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
@@ -70,54 +69,8 @@ else:
 client = None
 if HAS_GENAI_SDK and raw_api_key:
     try:
-        if raw_api_key.startswith("AQ."):
-            # Xử lý định dạng Express Key / Bearer Token
-            from google.genai import types
-            client = genai.Client(
-                http_options=types.HttpOptions(
-                    headers={"Authorization": f"Bearer {raw_api_key}"}
-                )
-            )
-        else:
-            # Xử lý định dạng Standard API Key
-            client = genai.Client(api_key=raw_api_key)
-    except Exception as e:
-        st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
-
-# --- 4. KHỞI TẠO GOOGLE GENAI SDK CHUẨN V2 ---
-import os
-import time
-import streamlit as st
-
-# --- KHỞI TẠO GOOGLE GENAI SDK ---
-try:
-    from google import genai
-    from google.genai import types
-    HAS_GENAI_SDK = True
-except ImportError:
-    HAS_GENAI_SDK = False
-
-# 1. Trích xuất và làm sạch API Key
-raw_api_key = ""
-if "GEMINI_API_KEY" in st.secrets:
-    raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
-else:
-    raw_api_key = str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-
-# 2. Khởi tạo Client cấu hình ép Header Bearer Token cho key AQ.Ab...
-client = None
-if HAS_GENAI_SDK and raw_api_key:
-    try:
-        if raw_api_key.startswith("AQ."):
-            # Ép SDK gửi xác thực dưới dạng OAuth2 / Bearer Token
-            client = genai.Client(
-                http_options=types.HttpOptions(
-                    headers={"Authorization": f"Bearer {raw_api_key}"}
-                )
-            )
-        else:
-            # Khởi tạo API Key tiêu chuẩn
-            client = genai.Client(api_key=raw_api_key)
+        # Khởi tạo API Key tiêu chuẩn áp dụng cho cả AQ... và AIza...
+        client = genai.Client(api_key=raw_api_key)
     except Exception as e:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
 
@@ -164,9 +117,8 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     model_list = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
         "gemini-2.0-flash",
+        "gemini-1.5-pro",
         "gemini-1.5-flash"
     ]
 
