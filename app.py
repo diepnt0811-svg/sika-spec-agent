@@ -59,7 +59,7 @@ def init_rag_system():
 
 retriever = init_rag_system()
 
-# --- 4. KHỞI TẠO GEMINI CLIENT CHUẨN (HỖ TRỢ TẤT CẢ ĐỊNH DẠNG API KEY ĐẦU AQ... HOẶC AIza...) ---
+# --- 4. KHỞI TẠO GEMINI CLIENT (HỖ TRỢ ĐẦY ĐỦ API KEY ĐẦU AQ... VÀ AIza...) ---
 raw_api_key = ""
 if "GEMINI_API_KEY" in st.secrets:
     raw_api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip('"').strip("'")
@@ -69,7 +69,7 @@ else:
 client = None
 if HAS_GENAI_SDK and raw_api_key:
     try:
-        # Khởi tạo API Key tiêu chuẩn áp dụng cho cả AQ... và AIza...
+        # Khởi tạo Client tiêu chuẩn truyền api_key trực tiếp
         client = genai.Client(api_key=raw_api_key)
     except Exception as e:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
@@ -116,10 +116,11 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
+    # Danh sách Model mới nhất theo khuyến nghị của Google API
     model_list = [
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-1.5-flash"
+        "gemini-3.8-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-flash-latest"
     ]
 
     response_text = None
