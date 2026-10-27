@@ -1,52 +1,55 @@
 import os
 import sys
 import time
-import json
-import re
 import pandas as pd
-import gradio as gr
+import streamlit as st
 from google import genai
 
-# --- 1. CẤU HÌNH HỆ THỐNG & NHẬP MODULE NỘI BỘ ---
+# --- 1. CẤU HÌNH TRANG STREAMLIT ---
+st.set_page_config(
+    page_title="Sika Spec Life Matrix - AI Specification Agent",
+    page_icon="🏗️",
+    layout="wide"
+)
+
+# --- 2. NHẬP MODULE NỘI BỘ ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-# Import các module RAG & Engine nội bộ
-try:
-    from vector_store import VectorDBManager
-    from knowledge_retriever_tool import EnterpriseKnowledgeRetriever, init_retriever_tool
-    from agent_engine import SikaAIAgent
-    from spec_matcher import SpecMatcher
-except ImportError as e:
-    print(f"⚠️ Cảnh báo Import Module: {e}")
+@st.cache_resource
+def init_rag_system():
+    """Khởi tạo CSDL Vector FAISS và Retriever (cached để tránh load lại nhiều lần)"""
+    try:
+        from vector_store import VectorDBManager
+        from knowledge_retriever_tool import EnterpriseKnowledgeRetriever, init_retriever_tool
+        from agent_engine import SikaAIAgent
+        from spec_matcher import SpecMatcher
 
-# --- 2. KHỞI TẠO CSDL VECTOR & RETRIEVER ---
-print("⏳ Đang khởi tạo CSDL FAISS Vector & Retriever...")
-vdb_manager = VectorDBManager()
-vector_db = vdb_manager.auto_update_or_load()
+        vdb_manager = VectorDBManager()
+        vector_db = vdb_manager.auto_update_or_load()
 
-if vector_db is not None:
-    init_retriever_tool(vector_db=vector_db)
-    retriever = EnterpriseKnowledgeRetriever(vector_db=vector_db)
-    agent = SikaAIAgent(vector_store=vector_db)
-    matcher = SpecMatcher(retriever=retriever)
-    print("✅ Đã khởi tạo Backend RAG Engine thành công!")
-else:
-    retriever = None
-    print("❌ Không thể khởi tạo CSDL Vector FAISS!")
+        if vector_db is not None:
+            init_retriever_tool(vector_db=vector_db)
+            retriever = EnterpriseKnowledgeRetriever(vector_db=vector_db)
+            return retriever
+    except Exception as e:
+        st.error(f"⚠️ Lỗi khởi tạo RAG Engine: {e}")
+    return None
+
+retriever = init_rag_system()
 
 # Khởi tạo Google GenAI Client
 api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=api_key)
+client = genai.Client(api_key=api_key) if api_key else None
 
-# --- 3. HÀM TRUY VẤN AI ENGINE (ĐÃ NÂNG CẤP GEMINI HIGH-VERSION & RETRY) ---
+# --- 3. HÀM TRUY VẤN CORE GEMINI AI ---
 def ask_sika_agent_core(question: str) -> str:
-    """
-    Hàm xử lý truy vấn RAG chính kết hợp FAISS + Gemini API với cơ chế Retry & Fallback
-    """
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa nạp được CSDL Vector FAISS."
+
+    if not client:
+        return "❌ Chưa cấu hình GEMINI_API_KEY trong Environment Variables / Secrets."
 
     # 1. Truy vấn tài liệu từ FAISS
     try:
@@ -80,7 +83,7 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # 3. Danh sách Gemini Model ưu tiên phiên bản cao & Fallback
+    # 3. Danh sách Gemini Model ưu tiên
     model_list = [
         "gemini-2.5-flash",
         "gemini-2.5-pro",
@@ -90,7 +93,7 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     response_text = None
     for model_name in model_list:
-        for attempt in range(1, 4):
+        for attempt in range(1, 3):
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -101,210 +104,140 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
                     break
             except Exception as e:
                 err_msg = str(e)
-                if "503" in err_msg or "UNAVAILABLE" in err_msg or "429" in err_msg:
-                    time.sleep(2)
+                if "503" in err_msg or "429" in err_msg:
+                    time.sleep(1.5)
                 else:
-                    break # Chuyển sang model tiếp theo
+                    break
         if response_text:
             break
 
     if not response_text:
-        return "⚠️ Tất cả các mô hình Gemini hiện đang bận hoặc không khả dụng. Vui lòng bấm gửi lại câu hỏi sau vài giây!"
+        return "⚠️ Tất cả các mô hình Gemini hiện đang bận hoặc gặp sự cố kết nối. Vui lòng thử lại!"
 
-    # Đính kèm danh sách tài liệu trích dẫn
     if static_docs:
         sources = list(set([f"{d.get('file_name')} (Trang {d.get('page')})" for d in static_docs]))
         response_text += "\n\n📌 **Tài liệu tham chiếu:**\n" + "\n".join([f"- {src}" for src in sources])
 
     return response_text
 
-# --- 4. HÀM XỬ LÝ FILE UPLOAD & GRADIO CALLBACKS ---
-def parse_uploaded_file(file_obj):
-    if file_obj is None:
+# --- 4. HÀM XỬ LÝ ĐỌC FILE ---
+def parse_uploaded_file(uploaded_file):
+    if uploaded_file is None:
         return ""
-
-    file_path = file_obj.name if hasattr(file_obj, 'name') else file_obj
-    ext = os.path.splitext(file_path)[1].lower()
+    
+    filename = uploaded_file.name
+    ext = os.path.splitext(filename)[1].lower()
     content = ""
 
     try:
         if ext in ['.xlsx', '.xls', '.csv']:
-            df = pd.read_csv(file_path) if ext == '.csv' else pd.read_excel(file_path)
-            content = f"--- NỘI DUNG FILE BOQ/EXCEL ({os.path.basename(file_path)}) ---\n" + df.to_string(index=False)
+            df = pd.read_csv(uploaded_file) if ext == '.csv' else pd.read_excel(uploaded_file)
+            content = f"--- NỘI DUNG FILE BOQ ({filename}) ---\n" + df.to_string(index=False)
         elif ext == '.pdf':
             import pypdf
-            reader = pypdf.PdfReader(file_path)
-            content = f"--- NỘI DUNG FILE PDF ({os.path.basename(file_path)}) ---\n"
+            reader = pypdf.PdfReader(uploaded_file)
+            content = f"--- NỘI DUNG FILE PDF ({filename}) ---\n"
             for i, page in enumerate(reader.pages):
                 content += f"\n[Trang {i+1}]\n" + (page.extract_text() or "")
         elif ext in ['.txt', '.md']:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            content = uploaded_file.read().decode('utf-8')
     except Exception as e:
         content = f"[Lỗi đọc file: {str(e)}]"
 
     return content
 
-def process_spec_request(file_obj, manual_prompt, history, progress=gr.Progress()):
-    start_time = time.time()
-    if history is None:
-        history = []
+# --- 5. GIAO DIỆN STREAMLIT UI ---
+st.title("🏗️ SIKA SPEC LIFE MATRIX - AI SPECIFICATION AGENT")
+st.caption("Hệ thống tự động thẩm định & Khớp giải pháp vật liệu Sika cho Dự án Công nghiệp")
 
-    progress(0.1, desc="⏳ [1/3] Đang đọc & trích xuất dữ liệu File/BOQ...")
-    file_content = parse_uploaded_file(file_obj) if file_obj else ""
+# Khởi tạo Chat History trong Session State
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "last_result" not in st.session_state:
+    st.session_state.last_result = ""
+if "manual_input_val" not in st.session_state:
+    st.session_state.manual_input_val = ""
 
+col1, col2 = st.columns([1, 2])
+
+# --- CỘT TRÁI: ĐẦU VÀO ---
+with col1:
+    st.subheader("📥 1. Đầu vào Yêu cầu Dự án")
+    
+    uploaded_file = st.file_uploader(
+        "📁 Tải lên File Dự án / BOQ / Specs",
+        type=["xlsx", "xls", "csv", "pdf", "txt"]
+    )
+
+    manual_input = st.text_area(
+        "✍️ Nhập/Bổ sung Yêu cầu Kỹ thuật Thủ công",
+        value=st.session_state.manual_input_val,
+        placeholder="Ví dụ: Cần sàn Epoxy chống hóa chất cho nhà máy dược GMP, diện tích 2000m2...",
+        height=130
+    )
+
+    btn_analyze = st.button("⚡ Phân tích & Đề xuất Giải pháp", type="primary", use_container_width=True)
+
+    st.divider()
+    st.markdown("💡 **Kịch bản Demo Nhanh:**")
+    
+    c1, c2, c3 = st.columns(3)
+    if c1.button("🧪 Dược GMP"):
+        st.session_state.manual_input_val = "Yêu cầu hệ thống sàn hoàn thiện cho nhà máy Dược phẩm GMP Châu Âu: Chịu rửa ma sát cao, kháng hóa chất vệ sinh, bề mặt phẳng mịn nhẵn bóng, độ dầy 3mm-4mm, tiêu chuẩn xả thải VOC thấp."
+        st.rerun()
+    if c2.button("🏭 Bán dẫn ESD"):
+        st.session_state.manual_input_val = "Dự án nhà máy đóng gói Bán dẫn SHTP: Yêu cầu hệ thống sàn ESD kiểm soát tĩnh điện (10^6 - 10^9 Ohms), chịu tải nhẹ đến trung bình, không phát sinh bụi sạch Class 100."
+        st.rerun()
+    if c3.button("💧 Nước thải"):
+        st.session_state.manual_input_val = "Hạng mục bể chứa nước thải công nghiệp pH 2-12: Yêu cầu vật liệu bọc phủ chống thấm và kháng mài mòn sinh học, thi công được trên bề mặt bê tông ẩm."
+        st.rerun()
+
+# Xử lý khi nhấn nút Phân tích
+if btn_analyze:
+    file_content = parse_uploaded_file(uploaded_file) if uploaded_file else ""
     combined_query = ""
     if file_content:
         combined_query += f"Dữ liệu từ File dự án/BOQ:\n{file_content}\n\n"
-    if manual_prompt.strip():
-        combined_query += f"Yêu cầu bổ sung từ người dùng:\n{manual_prompt.strip()}"
+    if manual_input.strip():
+        combined_query += f"Yêu cầu bổ sung từ người dùng:\n{manual_prompt.strip()}" if 'manual_prompt' in locals() else f"Yêu cầu bổ sung:\n{manual_input.strip()}"
 
     if not combined_query.strip():
-        history.append({"role": "user", "content": "Thẩm định yêu cầu dự án"})
-        history.append({"role": "assistant", "content": "⚠️ Vui lòng tải lên file BOQ/Dự án hoặc nhập yêu cầu kỹ thuật."})
-        return history, "", "⚠️ Chưa nhập dữ liệu"
+        st.warning("⚠️ Vui lòng tải lên file BOQ/Dự án hoặc nhập yêu cầu kỹ thuật.")
+    else:
+        with st.spinner("🔍 Đang truy vấn CSDL FAISS Vector & Gemini LLM..."):
+            start_time = time.time()
+            res = ask_sika_agent_core(combined_query)
+            elapsed = round(time.time() - start_time, 2)
+            
+            user_msg = manual_input.strip() if manual_input.strip() else "Phân tích file BOQ dự án"
+            st.session_state.messages.append({"role": "user", "content": user_msg})
+            st.session_state.messages.append({"role": "assistant", "content": f"⏱️ *Xử lý trong {elapsed}s*\n\n" + res})
+            st.session_state.last_result = res
 
-    progress(0.4, desc="🔍 [2/3] Đang truy vấn CSDL FAISS Vector & Đối chiếu Specs Sika...")
-    user_msg = manual_prompt.strip() if manual_prompt.strip() else "Phân tích yêu cầu dự án và đề xuất giải pháp Sika phù hợp."
+# --- CỘT PHẢI: KHUNG CHAT & KẾT QUẢ ---
+with col2:
+    st.subheader("📊 2. Kết quả Phân tích & Hỏi đáp Kỹ thuật")
 
-    progress(0.7, desc="🤖 [3/3] Gemini LLM đang tổng hợp & lập luận kết quả...")
-    try:
-        response = ask_sika_agent_core(combined_query)
-        elapsed_time = round(time.time() - start_time, 2)
-        status_info = f"⚡ Hoàn thành trong **{elapsed_time} giây**"
+    # Hiển thị lịch sử Chat
+    chat_container = st.container(height=450)
+    with chat_container:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-        history.append({"role": "user", "content": user_msg})
-        history.append({"role": "assistant", "content": response})
-
-        return history, response, status_info
-    except Exception as e:
-        elapsed_time = round(time.time() - start_time, 2)
-        error_msg = f"❌ Lỗi xử lý từ hệ thống AI ({elapsed_time}s): {str(e)}"
-        history.append({"role": "user", "content": user_msg})
-        history.append({"role": "assistant", "content": error_msg})
-        return history, error_msg, f"❌ Thất bại sau {elapsed_time}s"
-
-def user_follow_up_chat(user_message, history, last_result, progress=gr.Progress()):
-    if not user_message.strip():
-        return "", history, ""
-
-    start_time = time.time()
-    if history is None:
-        history = []
-
-    progress(0.3, desc="🔍 Đang tìm thông tin bổ sung...")
-    contextual_prompt = (
-        f"Dựa trên kết quả thẩm định giải pháp Sika trước đó:\n\n{last_result}\n\n"
-        f"Người dùng hỏi thêm: {user_message}"
-    )
-
-    progress(0.7, desc="🤖 Sika Agent đang suy luận câu trả lời...")
-
-    try:
-        bot_response = ask_sika_agent_core(contextual_prompt)
-        elapsed_time = round(time.time() - start_time, 2)
-
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": bot_response})
-
-        status_info = f"⚡ Phản hồi trong **{elapsed_time} giây**"
-        return "", history, status_info
-    except Exception as e:
-        elapsed_time = round(time.time() - start_time, 2)
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": f"❌ Lỗi: {str(e)}"})
-        return "", history, f"❌ Lỗi sau {elapsed_time}s"
-
-# --- 5. GIAO DIỆN GRADIO UI ---
-with gr.Blocks() as demo:
-    current_result_state = gr.State("")
-
-    gr.Markdown(
-        """
-        # 🏗️ SIKA SPEC LIFE MATRIX - AI SPECIFICATION AGENT
-        ### Hệ thống tự động thẩm định & Khớp giải pháp vật liệu Sika cho Dự án Công nghiệp
-        """
-    )
-
-    with gr.Row():
-        # CỘT TRÁI: DỮ LIỆU ĐẦU VÀO
-        with gr.Column(scale=1):
-            gr.Markdown("### 📥 1. Đầu vào Yêu cầu Dự án")
-
-            file_input = gr.File(
-                label="📁 Tải lên File Dự án / BOQ / Specs (Excel, PDF, TXT)",
-                file_types=[".xlsx", ".xls", ".csv", ".pdf", ".txt"],
-                type="filepath"
-            )
-
-            manual_input = gr.Textbox(
-                label="✍️ Nhập/Bổ sung Yêu cầu Kỹ thuật Thủ công",
-                placeholder="Ví dụ: Cần sàn Epoxy chống hóa chất cho nhà máy dược GMP, diện tích 2000m2...",
-                lines=4
-            )
-
-            btn_submit = gr.Button("⚡ Phân tích & Đề xuất Giải pháp", variant="primary", size="lg")
-            timer_output = gr.Markdown("⏱️ *Thời gian xử lý dự kiến: ~3 - 6 giây*")
-
-            gr.Markdown("---")
-            gr.Markdown("💡 **Kịch bản Demo Nhanh (Click để chọn):**")
-
-            btn_sample_1 = gr.Button("🧪 Kịch bản 1: Sàn Sạch Dược phẩm GMP (Ucrete MF)")
-            btn_sample_2 = gr.Button("🏭 Kịch bản 2: Phòng Sạch Bán dẫn SHTP (Chống tĩnh điện ESD)")
-            btn_sample_3 = gr.Button("💧 Kịch bản 3: Chống thấm & Kháng hóa chất Bể xử lý nước thải")
-
-        # CỘT PHẢI: KẾT QUẢ ĐẦU RA & Ô CHAT
-        with gr.Column(scale=2):
-            gr.Markdown("### 📊 2. Kết quả Phân tích & Khung Hỏi Đáp Trực tiếp")
-
-            chatbot = gr.Chatbot(
-                label="Lịch sử Phân tích & Thảo luận Kỹ thuật",
-                height=450
-            )
-
-            with gr.Row():
-                chat_input = gr.Textbox(
-                    label="💬 Hỏi đáp thêm về kết quả",
-                    placeholder="So sánh chi phí, quy trình thi công, tiêu chuẩn ASTM...",
-                    scale=4
-                )
-                btn_chat_send = gr.Button("Gửi 🚀", variant="secondary", scale=1)
-
-    # NẮM BẮT SỰ KIỆN NÚT BẤM
-    btn_submit.click(
-        fn=process_spec_request,
-        inputs=[file_input, manual_input, chatbot],
-        outputs=[chatbot, current_result_state, timer_output]
-    )
-
-    btn_chat_send.click(
-        fn=user_follow_up_chat,
-        inputs=[chat_input, chatbot, current_result_state],
-        outputs=[chat_input, chatbot, timer_output]
-    )
-    chat_input.submit(
-        fn=user_follow_up_chat,
-        inputs=[chat_input, chatbot, current_result_state],
-        outputs=[chat_input, chatbot, timer_output]
-    )
-
-    # Kịch bản mẫu
-    def load_sample_1():
-        return None, "Yêu cầu hệ thống sàn hoàn thiện cho nhà máy Dược phẩm GMP Châu Âu: Chịu rửa ma sát cao, kháng hóa chất vệ sinh, bề mặt phẳng mịn nhẵn bóng, độ dầy 3mm-4mm, tiêu chuẩn xả thải VOC thấp."
-
-    def load_sample_2():
-        return None, "Dự án nhà máy đóng gói Bán dẫn SHTP: Yêu cầu hệ thống sàn ESD kiểm soát tĩnh điện (10^6 - 10^9 Ohms), chịu tải nhẹ đến trung bình, không phát sinh bụi sạch Class 100."
-
-    def load_sample_3():
-        return None, "Hạng mục bể chứa nước thải công nghiệp pH 2-12: Yêu cầu vật liệu bọc phủ chống thấm và kháng mài mòn sinh học, thi công được trên bề mặt bê tông ẩm."
-
-    btn_sample_1.click(fn=load_sample_1, outputs=[file_input, manual_input])
-    btn_sample_2.click(fn=load_sample_2, outputs=[file_input, manual_input])
-    btn_sample_3.click(fn=load_sample_3, outputs=[file_input, manual_input])
-
-if __name__ == "__main__":
-    demo.queue().launch(
-        share=True,
-        debug=True,
-        theme=gr.themes.Soft(primary_hue="yellow", secondary_hue="gray")
-    )
+    # Ô nhập câu hỏi thảo luận thêm
+    if user_followup := st.chat_input("💬 Hỏi đáp thêm về kết quả (độ dày, định mức, quy trình thi công...)..."):
+        st.session_state.messages.append({"role": "user", "content": user_followup})
+        
+        contextual_prompt = (
+            f"Dựa trên kết quả thẩm định giải pháp Sika trước đó:\n\n{st.session_state.last_result}\n\n"
+            f"Người dùng hỏi thêm: {user_followup}"
+        )
+        
+        with st.spinner("🤖 Sika Agent đang suy luận..."):
+            start_time = time.time()
+            bot_res = ask_sika_agent_core(contextual_prompt)
+            elapsed = round(time.time() - start_time, 2)
+            
+            st.session_state.messages.append({"role": "assistant", "content": f"⏱️ *Phản hồi trong {elapsed}s*\n\n" + bot_res})
+        st.rerun()
