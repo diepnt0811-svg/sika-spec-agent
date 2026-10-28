@@ -1,17 +1,9 @@
 import os
 import sys
 import importlib
-import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-
-from langchain_community.vectorstores import FAISS
-
-# Thử import các module phụ trợ nếu có (không gây crash app nếu thiếu ở môi trường Cloud)
+# Thử import các module phụ trợ nếu có
 try:
     import config
     HAS_CONFIG = True
@@ -34,6 +26,7 @@ class VectorDBManager:
     def __init__(self):
         # 1. Xác định đường dẫn gốc
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self._embeddings = None  # Lazy attribute
         
         # 2. Đọc config nếu sẵn có
         if HAS_CONFIG:
@@ -57,18 +50,28 @@ class VectorDBManager:
             except Exception:
                 pass
 
-        # 3. Cấu hình Device & Embeddings
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"🚀 Embedding Model [{self.model_name}] đang chạy trên: [{device.upper()}]")
-        
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=self.model_name,
-            model_kwargs={'device': device},
-            encode_kwargs={
-                'normalize_embeddings': True,
-                'batch_size': 16
-            }
-        )
+    @property
+    def embeddings(self):
+        """Lazy Load Embedding Model - Chỉ nạp vào RAM khi thực sự có truy vấn"""
+        if self._embeddings is None:
+            import torch
+            try:
+                from langchain_huggingface import HuggingFaceEmbeddings
+            except ImportError:
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"🚀 Embedding Model [{self.model_name}] đang chạy trên: [{device.upper()}]")
+            
+            self._embeddings = HuggingFaceEmbeddings(
+                model_name=self.model_name,
+                model_kwargs={'device': device},
+                encode_kwargs={
+                    'normalize_embeddings': True,
+                    'batch_size': 16
+                }
+            )
+        return self._embeddings
 
     def _resolve_db_path(self):
         """Tự động tìm kiếm vị trí chứa file index.faiss chính xác nhất"""
@@ -86,7 +89,9 @@ class VectorDBManager:
         return self.db_path
 
     def load_db(self):
-        """Nạp CSDL FAISS từ đĩa"""
+        """Nạp CSDL FAISS từ đĩa (Lazy Import FAISS)"""
+        from langchain_community.vectorstores import FAISS
+        
         target_path = self._resolve_db_path()
         index_file = os.path.join(target_path, "index.faiss")
         
@@ -118,6 +123,9 @@ class VectorDBManager:
         return processed_files
 
     def _create_vector_in_batches(self, chunks, batch_size=16):
+        import torch
+        from langchain_community.vectorstores import FAISS
+        
         total_chunks = len(chunks)
         vector_store = None
 
@@ -182,7 +190,6 @@ class VectorDBManager:
         return vector_store
 
     def auto_update_or_load(self):
-        # 1. Kiểm tra & nạp CSDL đã có
         resolved_path = self._resolve_db_path()
         index_file = os.path.join(resolved_path, "index.faiss")
         
@@ -190,7 +197,6 @@ class VectorDBManager:
             print(f"⚡ Đang nạp CSDL Vector FAISS từ '{resolved_path}'...")
             vector_store = self.load_db()
             if vector_store is not None:
-                # Kiểm tra xem có môi trường để scan PDF mới không
                 if HAS_PDF_PROCESSOR and os.path.exists(self.pdf_dir):
                     all_pdf_files = []
                     for root, _, files in os.walk(self.pdf_dir):
@@ -223,6 +229,5 @@ class VectorDBManager:
                 
                 return vector_store
 
-        # 2. Nếu không nạp được index.faiss có sẵn, chuyển sang build từ đầu (cho local/Colab)
         print("⚡ CSDL FAISS chưa tồn tại hoặc không thể nạp. Thử khởi tạo từ đầu...")
         return self.build_from_scratch()
