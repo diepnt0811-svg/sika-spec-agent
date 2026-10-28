@@ -11,11 +11,12 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Tải trước mô hình Embedding ngay trong quá trình Build Image
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
-
 COPY . .
+
+# Biến môi trường bắt buộc để Streamlit nhận diện đúng port 8080 của Google Cloud
+ENV PORT=8080
+ENV HOST=0.0.0.0
 
 EXPOSE 8080
 
-CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
+CMD ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.enableCORS=false", "--server.enableXsrfProtection=false", "--server.headless=true"]
