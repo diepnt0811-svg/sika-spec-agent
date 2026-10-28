@@ -1,4 +1,5 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
+torch
 streamlit>=1.30.0
 google-genai>=0.1.1
 pandas
