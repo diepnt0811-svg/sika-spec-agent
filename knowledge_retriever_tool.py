@@ -1,23 +1,16 @@
-# ==============================================================================
-# UNIVERSAL ENTERPRISE KNOWLEDGE RETRIEVAL TOOL (LEXICAL + VECTOR HYBRID RETRIEVER)
-# ==============================================================================
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional
-from langchain_community.vectorstores import FAISS
-from langchain_core.tools import tool
-
 
 class EnterpriseKnowledgeRetriever:
   """Bộ truy xuất tri thức tổng quát: Kết hợp Lọc từ khóa chính xác (Lexical Filter)
-
   và CSDL Vector (Vector Search) cho mọi doanh nghiệp/ngành nghề.
   """
 
   def __init__(
       self,
-      vector_db: FAISS,
+      vector_db: Any,
       packaged_context_path: Optional[str] = None,
       llm_client: Optional[Any] = None,
       domain_context: Optional[str] = None,
@@ -40,11 +33,9 @@ class EnterpriseKnowledgeRetriever:
     return {}
 
   def dynamic_query_expansion(self, user_query: str) -> List[str]:
-    """Mở rộng từ khóa thông minh cho mọi truy vấn."""
     keywords = set()
     clean_query = user_query.strip().lower()
 
-    # Trích xuất mã kỹ thuật/từ viết tắt bằng Regex
     extracted_codes = re.findall(
         r'\b[A-Za-z0-9]+(?:[-_/\.][A-Za-z0-9]+)*\b', user_query
     )
@@ -76,13 +67,10 @@ class EnterpriseKnowledgeRetriever:
   def search_static_kb(
       self, query: str, expanded_keywords: List[str], top_k: int = 5
   ) -> List[Dict[str, Any]]:
-    """Tra cứu kết hợp: Lọc từ khóa chính xác (Lexical Matching) + Vector Search."""
     clean_query = query.strip().lower()
     exact_matches = []
     exact_match_ids = set()
 
-    # 1. BƯỚC 1: LEXICAL MATCHING (Tìm chính xác từ khóa trong FAISS Docstore)
-    # Đặc biệt hiệu quả với từ khóa ngắn (<= 5 ký tự) hoặc mã tiêu chuẩn
     if len(clean_query) <= 5 or clean_query.isalnum():
       docstore = getattr(self.vector_db, 'docstore', None)
       if docstore and hasattr(docstore, '_dict'):
@@ -94,9 +82,7 @@ class EnterpriseKnowledgeRetriever:
           file_name = doc.metadata.get('source_file', '').lower()
           content = doc.page_content.lower()
 
-          # Ưu tiên các file tài liệu kỹ thuật chuyên biệt (không phải EPD chung)
           if pattern.search(content) or pattern.search(file_name):
-            # Nếu là file TDS/Certificate/PDS thì gán score rất ưu tiên
             is_tech_doc = any(
                 tag in file_name for tag in ['tds', 'certificate', 'pds', 'spec']
             )
@@ -113,7 +99,6 @@ class EnterpriseKnowledgeRetriever:
             if len(exact_matches) >= top_k:
               break
 
-    # 2. BƯỚC 2: VECTOR SIMILARITY SEARCH (Truy vấn ngữ nghĩa từ FAISS)
     search_prompt = (
         f"{query} {' '.join(expanded_keywords)}"
         if len(clean_query) > 4
@@ -130,7 +115,6 @@ class EnterpriseKnowledgeRetriever:
 
     vector_results = []
     for doc, score in docs_with_score:
-      # Bỏ qua nếu đã xuất hiện trong danh sách exact_matches
       if doc.page_content[:100] in exact_match_ids:
         continue
 
@@ -142,7 +126,6 @@ class EnterpriseKnowledgeRetriever:
           'content': doc.page_content,
       })
 
-    # 3. HỢP NHẤT: Đưa Exact Matches lên đầu, sau đó lấp đầy bằng Vector Search
     combined_results = exact_matches + vector_results
     return combined_results[:top_k]
 
@@ -186,14 +169,10 @@ class EnterpriseKnowledgeRetriever:
     }
 
 
-# ==============================================================================
-# INITIALIZATION & LANGCHAIN TOOL BINDING
-# ==============================================================================
 GLOBAL_RETRIEVER_INSTANCE: Optional[EnterpriseKnowledgeRetriever] = None
 
-
 def init_retriever_tool(
-    vector_db: FAISS,
+    vector_db: Any,
     packaged_context_path: Optional[str] = None,
     llm_client: Optional[Any] = None,
     domain_context: Optional[str] = None,
@@ -205,23 +184,4 @@ def init_retriever_tool(
       llm_client=llm_client,
       domain_context=domain_context,
   )
-  print(
-      '✅ Đã khởi tạo thành công Universal EnterpriseKnowledgeRetriever'
-      ' Tool (Lexical Hybrid)!'
-  )
-
-
-@tool
-def enterprise_knowledge_retrieval_tool(query: str) -> str:
-  """Công cụ tra cứu thông tin tri thức tổng hợp từ tài liệu kỹ thuật, tiêu
-
-  chuẩn, catalog sản phẩm và hồ sơ dữ liệu động của doanh nghiệp.
-  """
-  global GLOBAL_RETRIEVER_INSTANCE
-  if GLOBAL_RETRIEVER_INSTANCE is None:
-    return (
-        "❌ Lỗi: Công cụ Tra cứu Tri thức chưa được khởi tạo trong Module 3!"
-    )
-
-  results = GLOBAL_RETRIEVER_INSTANCE.hybrid_retrieve(query, top_k=5)
-  return json.dumps(results, ensure_ascii=False, indent=2)
+  print('✅ Đã khởi tạo thành công Universal EnterpriseKnowledgeRetriever Tool!')
