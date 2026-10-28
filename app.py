@@ -1,4 +1,4 @@
-import os 
+import os
 import sys
 import time
 import traceback
@@ -24,14 +24,18 @@ except ImportError:
         "trên GitHub và chọn 'Reboot app' trên Streamlit Cloud."
     )
 
-# --- 3. NHẬP MODULE NỘI BỘ (RAG ENGINE & FAISS) ---
+# --- 3. KHỞI TẠO CSDL VECTOR FAISS & RAG ENGINE (LAZY LOADING VỚI CACHE) ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-@st.cache_resource
-def init_rag_system():
-    """Khởi tạo CSDL Vector FAISS và Retriever với cơ chế debug chi tiết"""
+@st.cache_resource(show_spinner="⏳ Đang nạp CSDL FAISS Vector DB & Mô hình Embedding...")
+def get_rag_retriever():
+    """
+    Hàm khởi tạo Retriever bọc cache.
+    Chỉ thực thi nạp mô hình nặng vào RAM ở LẦN ĐẦU TIÊN được gọi, 
+    giúp ứng dụng bật giao diện cực nhanh để vượt qua Startup Probe của Cloud Run.
+    """
     try:
         app_dir = os.path.dirname(os.path.abspath(__file__))
         if app_dir not in sys.path:
@@ -42,13 +46,12 @@ def init_rag_system():
 
         vdb_manager = VectorDBManager()
         
-        # Gọi nạp CSDL
+        # Gọi nạp CSDL Vector
         vector_db = vdb_manager.auto_update_or_load()
 
         if vector_db is not None:
             init_retriever_tool(vector_db=vector_db)
             retriever = EnterpriseKnowledgeRetriever(vector_db=vector_db)
-            st.success("✅ Đã nạp thành công CSDL FAISS Vector DB!")
             return retriever
         else:
             st.error("⚠️ `vector_db` trả về `None`. Lỗi có thể do không tìm thấy file `index.faiss` / `index.pkl` hoặc lỗi nạp Embedding Model.")
@@ -57,7 +60,6 @@ def init_rag_system():
         st.code(traceback.format_exc(), language="python")
     return None
 
-retriever = init_rag_system()
 
 # --- 4. KHỞI TẠO GEMINI CLIENT (HỖ TRỢ ĐẦY ĐỦ API KEY ĐẦU AQ... VÀ AIza...) ---
 raw_api_key = ""
@@ -80,8 +82,10 @@ def ask_sika_agent_core(question: str) -> str:
         return "❌ Thư viện `google-genai` chưa được cài đặt trong `requirements.txt`."
 
     if not client:
-        return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong Secrets."
+        return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong Secrets hoặc Biến môi trường."
 
+    # Kích hoạt Lazy Loading: Chỉ lấy retriever khi thực sự chạy truy vấn
+    retriever = get_rag_retriever()
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
 
@@ -118,9 +122,9 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     # Danh sách Model mới nhất theo khuyến nghị của Google API
     model_list = [
-        "gemini-3.8-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash-latest"
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
     ]
 
     response_text = None
