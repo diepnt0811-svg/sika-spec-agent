@@ -78,3 +78,13 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
             
         print("\n")
         return response_text, unique_docs
+
+import streamlit as st
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+@st.cache_resource
+def get_embedding_model():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# Thay vì gọi trực tiếp ở top-level, anh gọi hàm này bên trong luồng xử lý RAG
+embeddings = get_embedding_model()
