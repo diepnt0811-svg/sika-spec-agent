@@ -21,10 +21,10 @@ except ImportError:
     HAS_GENAI_SDK = False
     st.error(
         "⚠️ Thiếu thư viện `google-genai`. Anh vui lòng thêm `google-genai` vào file `requirements.txt` "
-        "trên GitHub và chọn 'Reboot app' trên Streamlit Cloud."
+        "trên GitHub và chọn 'Redeploy' trên Google Cloud Run."
     )
 
-# --- 3. KHỞI TẠO CSDL VECTOR FAISS & RAG ENGINE (LAZY LOADING VỚI CACHE) ---
+# --- 3. KHỞI TẠO CSDL VECTOR FAISS & RAG ENGINE (LAZY IMPORT & LAZY LOADING) ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
@@ -32,15 +32,15 @@ if CURRENT_DIR not in sys.path:
 @st.cache_resource(show_spinner="⏳ Đang nạp CSDL FAISS Vector DB & Mô hình Embedding...")
 def get_rag_retriever():
     """
-    Hàm khởi tạo Retriever bọc cache.
-    Chỉ thực thi nạp mô hình nặng vào RAM ở LẦN ĐẦU TIÊN được gọi, 
-    giúp ứng dụng bật giao diện cực nhanh để vượt qua Startup Probe của Cloud Run.
+    Toàn bộ module AI nặng chỉ được import khi hàm này được gọi lần đầu tiên.
+    Giúp app khởi động giao diện trong 1-2 giây để vượt qua Startup Probe của Cloud Run.
     """
     try:
         app_dir = os.path.dirname(os.path.abspath(__file__))
         if app_dir not in sys.path:
             sys.path.insert(0, app_dir)
 
+        # LAZY IMPORT: Tuyệt đối không import ở top-level scope
         from vector_store import VectorDBManager
         from knowledge_retriever_tool import EnterpriseKnowledgeRetriever, init_retriever_tool
 
@@ -71,7 +71,6 @@ else:
 client = None
 if HAS_GENAI_SDK and raw_api_key:
     try:
-        # Khởi tạo Client tiêu chuẩn truyền api_key trực tiếp
         client = genai.Client(api_key=raw_api_key)
     except Exception as e:
         st.error(f"❌ Lỗi khởi tạo Gemini Client: {str(e)}")
@@ -84,7 +83,7 @@ def ask_sika_agent_core(question: str) -> str:
     if not client:
         return "❌ Chưa nhận diện được API Key. Anh hãy kiểm tra lại `GEMINI_API_KEY` trong Secrets hoặc Biến môi trường."
 
-    # Kích hoạt Lazy Loading: Chỉ lấy retriever khi thực sự chạy truy vấn
+    # Kích hoạt Lazy Loading: Chỉ lấy retriever khi người dùng thực sự hỏi
     retriever = get_rag_retriever()
     if not retriever:
         return "❌ Hệ thống chưa sẵn sàng do chưa kết nối được CSDL Vector FAISS."
@@ -120,7 +119,6 @@ Bước 3 (Tổng hợp câu trả lời): Đưa ra câu trả lời chính xác
 
 BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
-    # Danh sách Model mới nhất theo khuyến nghị của Google API
     model_list = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
@@ -153,7 +151,7 @@ BẮT ĐẦU CÂU TRẢ LỜI TỔNG HỢP CHO NGƯỜI DÙNG:"""
 
     return response_text
 
-# --- 5. HÀM ĐỌC FILE TẢI LÊN ---
+# --- 5. HÀM ĐỌC FILE TẢI LÊN (LAZY IMPORT THƯ VIỆN ĐỌC FILE) ---
 def parse_uploaded_file(uploaded_file):
     if uploaded_file is None:
         return ""
@@ -251,14 +249,12 @@ if btn_analyze:
 with col_chat:
     st.subheader("📊 2. Kết quả Phân tích & Thảo luận Kỹ thuật")
 
-    # Vùng chứa khung hội thoại
     chat_container = st.container(height=480)
     with chat_container:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-    # Nhập câu hỏi phụ
     if user_followup := st.chat_input("💬 Hỏi đáp thêm (định mức thi công, tiêu chuẩn ASTM, so sánh giải pháp...)..."):
         st.session_state.messages.append({"role": "user", "content": user_followup})
         
